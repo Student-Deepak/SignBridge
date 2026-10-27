@@ -1,0 +1,172 @@
+# SignBridge: Full-Stack Video Conferencing Platform with Real-Time Sign Language Captioning
+
+SignBridge is an accessible, AI-powered video conferencing system designed for seamless two-way communication between **deaf/mute (sign language users)** and **hearing/speaking (normal)** participants. The system integrates the user's trained `signBridge` model (21 hand landmarks, 63 features, 29 ASL classes) with MediaPipe hand tracking, TensorFlow.js client-side inference, WebRTC multi-user video conferencing, real-time live caption broadcasting, Text-to-Speech (TTS), and Speech-to-Text (STT).
+
+---
+
+## 1. Codebase & Model Analysis Findings
+
+- **Existing Model (`tfjs_model/model.json` + `group1-shard1of1.bin`)**:
+  - Sequential neural network: Input `(63,)` $\rightarrow$ Dense(128, ReLU) $\rightarrow$ Dropout(0.2) $\rightarrow$ Dense(64, ReLU) $\rightarrow$ Dropout(0.2) $\rightarrow$ Dense(29, Softmax).
+  - 63 inputs correspond to 21 3D hand landmarks `(x, y, z)` extracted via MediaPipe Hands.
+  - 29 output classes:
+    `['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'del', 'nothing', 'space']`
+- **Training Pipeline (`collect_data.py` & `model_train.py`)**:
+  - Uses `cv2` and `mp.solutions.hands.Hands(max_num_hands=1)`.
+  - Normalizes landmarks and flattens them into a 63-element feature vector.
+- **Conferencing Architecture**:
+  - Client-side inference with `@tensorflow/tfjs` allows **zero network latency** (under 10ms inference per frame on local GPU/WebGL) compared to streaming full raw video frames to a backend.
+  - WebRTC handles high-definition peer-to-peer audio and video streaming.
+  - Node.js + Express + Socket.IO coordinates room joining, WebRTC signaling (SDP offer/answer and ICE candidate exchange), and real-time caption/message distribution.
+
+---
+
+## 2. Proposed System Architecture
+
+```mermaid
+graph TD
+    subgraph Client ["Frontend (React + Vite)"]
+        UI["Meeting UI & Lobby"]
+        Cam["Webcam Video Stream"]
+        MP["MediaPipe Hands (21 Landmarks)"]
+        TF["TF.js SignBridge Model (29 Classes)"]
+        Buffer["Temporal Gesture Stabilizer & Word Buffer"]
+        TTS["Web Speech Synthesis (Text-to-Speech)"]
+        STT["Web Speech Recognition (Speech-to-Text)"]
+        RTC["WebRTC RTCPeerConnection"]
+        SocketC["Socket.IO Client"]
+    end
+
+    subgraph Server ["Backend (Node.js + Express + Socket.IO)"]
+        Signaling["WebRTC Signaling Hub"]
+        Rooms["Room & Participant Manager"]
+        CaptionHub["Real-Time Caption Relay"]
+        TranscriptSvc["Meeting Transcript Logger"]
+    end
+
+    Cam --> MP
+    MP --> TF
+    TF --> Buffer
+    Buffer -->|"Sign Caption"| UI
+    Buffer -->|"Auto Voice"| TTS
+    Buffer -->|"Broadcast Caption"| SocketC
+    STT -->|"Voice Caption"| SocketC
+    Cam --> RTC
+    SocketC <--> Signaling
+    SocketC <--> CaptionHub
+    RTC <-->|"P2P Video/Audio"| RTC
+```
+
+---
+
+## 3. Key Features
+
+### A. For Muted / Deaf Participants (Sign Language Users)
+1. **Real-time ASL Hand Tracking**:
+   - MediaPipe Hands tracks 21 landmarks at 30-60 FPS.
+   - Toggleable high-tech neon skeleton overlay directly on their local video feed.
+2. **Instant SignBridge Inference**:
+   - Classifies gesture into letters A-Z, space, del, or resting/nothing.
+   - Shows active prediction and confidence percentage badge.
+3. **Smart Temporal Gesture Stabilizer & Word Builder**:
+   - Majority voting over a rolling window (e.g., 10-15 frames) to eliminate jitter.
+   - Hold-duration detection (holds gesture for ~600ms to confirm a letter).
+   - Word buffer: appends letters, auto-spaces on `'space'`, backspaces on `'del'`.
+   - Word completion and quick phrases ("Hello", "Thank you", "Yes", "No", "Please wait", "I agree", etc.).
+4. **Automatic Voice Synthesis (Text-to-Speech)**:
+   - When the muted user finishes a word/sentence or clicks speak, browser speech synthesis vocalizes the words aloud so hearing participants hear them naturally.
+5. **Live Caption Broadcast**:
+   - Generated sign captions are instantly pushed to all meeting participants' screens with the tag `[🤟 Name (Sign Language)]`.
+
+### B. For Normal / Hearing Participants (Speakers)
+1. **Live Speech-to-Text (STT)**:
+   - Uses Web Speech Recognition to transcribe spoken words in real time.
+   - Subtitles immediately appear on the muted participant's screen with `[🎙️ Name (Voice)]`.
+2. **ASL Reference Dictionary Drawer**:
+   - Cheatsheet of ASL signs (A-Z and common gestures) so hearing participants can learn or reference sign meanings during the meeting.
+
+### C. Major Meeting Conferencing Capabilities
+1. **Modern Meeting Lobby**:
+   - Enter name, select role (`Mute / Signer 🤟`, `Hearing / Speaker 🎙️`, or `Dual / Interpreter`), test camera and mic, preview live hand landmark tracking before joining.
+   - Create new meeting room (generates unique Room ID) or join with Room ID.
+2. **In-Meeting Video Grid**:
+   - Responsive multi-participant layout.
+   - Status indicators (Sign tracking on/off, mic muted, speaking indicator).
+3. **Google Meet / Zoom-Style Floating Live Caption Bar**:
+   - Real-time animated subtitle banner displaying who is signing/speaking with distinct color coding.
+4. **Meeting Controls Dock**:
+   - Camera toggle, Mic toggle, Hand Skeleton toggle, Captions (CC) toggle, Voice Synthesis toggle, Screen Share, In-Meeting Chat, ASL Reference Drawer, Transcript Drawer, Leave Meeting.
+5. **Meeting Transcript & Export**:
+   - Full time-stamped history of the conversation (both signed and spoken lines).
+   - "Download Transcript" (.txt / .json) button for post-meeting documentation.
+6. **Sign Simulator & Test Mode**:
+   - Allows testing the sign captioning pipeline, word buffer, and TTS even without a webcam or when demonstrating without physical signing.
+
+---
+
+## 4. Proposed Implementation Steps
+
+### Component 1: Backend Server (`server/`)
+- [NEW] `server/package.json`: Dependencies (`express`, `socket.io`, `cors`, `dotenv`).
+- [NEW] `server/index.js`:
+  - Express server with CORS.
+  - Socket.IO handlers: `join-room`, `user-connected`, `offer`, `answer`, `ice-candidate`, `send-caption`, `send-message`, `user-disconnected`.
+  - Room state store and transcript logger.
+- [NEW] `server/.env.example`: Port configuration (default `5000`).
+
+### Component 2: Frontend Client (`client/`)
+- Setup Vite + React in `client/`.
+- [NEW] `client/public/model/`:
+  - Copy `tfjs_model/model.json` and `tfjs_model/group1-shard1of1.bin`.
+  - Add `client/src/data/classes.json` containing the 29 class labels.
+- [NEW] `client/src/services/signDetection.js`:
+  - TF.js model loader and inference engine.
+  - 63-element feature array formatter.
+  - Landmark drawing utility (neon canvas overlay).
+- [NEW] `client/src/services/gestureStabilizer.js`:
+  - Temporal smoothing, rolling window majority voting, hold-to-confirm timer, word and sentence accumulation.
+- [NEW] `client/src/services/speechService.js`:
+  - Web Speech Recognition (Speech-to-Text for hearing person).
+  - Web Speech Synthesis (Text-to-Speech for muted person).
+- [NEW] `client/src/services/webrtc.js`:
+  - WebRTC peer connection manager with STUN servers, audio/video track management, and screen sharing.
+- [NEW] `client/src/components/`:
+  - `Lobby.jsx`: Role selection, camera preview, hand tracking test, room join/create.
+  - `MeetingRoom.jsx`: Main conferencing stage.
+  - `VideoGrid.jsx`: Video tiles for local and remote peers.
+  - `SignDetectorOverlay.jsx`: Real-time gesture HUD, confidence meter, word buffer, quick phrases.
+  - `LiveCaptionsBar.jsx`: Floating animated subtitle overlay for all participants.
+  - `ControlBar.jsx`: Conferencing action buttons with glassmorphic styling.
+  - `ChatDrawer.jsx`: In-meeting text chat and reactions.
+  - `AslGuideDrawer.jsx`: ASL alphabet reference chart with visual gesture illustrations.
+  - `TranscriptDrawer.jsx`: Meeting transcript with export functionality.
+- [NEW] `client/src/styles/`:
+  - Modern, rich dark glassmorphic CSS design system with custom CSS variables, smooth animations, and responsive layout.
+
+---
+
+## 5. Verification Plan
+
+### Automated / Build Verification
+- Install server dependencies: `cd server && npm install`.
+- Install client dependencies: `cd client && npm install`.
+- Build client production bundle: `cd client && npm run build` to ensure 0 TypeScript/JSX/bundler errors.
+
+### Functional Verification
+1. **Model Loading & Inference**:
+   - Verify `tf.loadLayersModel` loads `model.json` and weights successfully.
+   - Run inference on dummy 63-element test vector and verify 29-class probability distribution.
+2. **Sign Language Tracking & Captioning**:
+   - Open webcam in Signer mode.
+   - Verify MediaPipe hands tracks hand landmarks and draws skeleton overlay.
+   - Verify predicted letter changes with hand signs.
+   - Verify hold duration adds letters to word buffer and 'space' commits word.
+   - Verify Text-to-Speech vocalizes committed words.
+3. **Voice Captioning (STT)**:
+   - In Speaker mode, speak into microphone and verify speech appears in real-time captions.
+4. **Conferencing & Signaling**:
+   - Open two browser windows / tabs in the same room ID (one as Signer, one as Speaker).
+   - Verify WebRTC establishes peer video/audio connection.
+   - Verify sign captions from Tab 1 appear live on Tab 2.
+   - Verify voice captions from Tab 2 appear live on Tab 1.
+   - Verify meeting transcript records both participants with timestamps.

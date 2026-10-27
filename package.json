@@ -1,0 +1,14 @@
+{
+  "name": "signbridge-fullstack",
+  "version": "1.0.0",
+  "description": "SignBridge: AI-Powered Full-Stack Video Conferencing Platform with Real-Time Sign Language Translation",
+  "scripts": {
+    "server": "npm --prefix server start",
+    "client": "npm --prefix client run dev",
+    "dev:server": "npm --prefix server run dev",
+    "build:client": "npm --prefix client run build"
+  },
+  "keywords": ["asl", "sign-language", "webrtc", "tensorflow-js", "mediapipe", "react", "video-conferencing", "accessibility"],
+  "author": "SignBridge Team",
+  "license": "MIT"
+}
